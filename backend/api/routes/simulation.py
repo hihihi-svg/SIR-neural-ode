@@ -1,114 +1,82 @@
 from fastapi import APIRouter
 from schemas.request_models import SimulationInput
 import os
-import sys
-import torch
 import numpy as np
-from torchdiffeq import odeint
 
 router = APIRouter(
     prefix="/simulate",
     tags=["Simulation"]
 )
 
-# Append backend directory to sys.path to allow imports from models
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from models.hybrid.hybrid_model import HybridODE
-
-# Load baseline parameters
+# Load baseline SIR parameters
 try:
     params_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "saved_models", "sir_params.npy"))
     if os.path.exists(params_path):
         beta, gamma = np.load(params_path)
     else:
-        beta, gamma = 0.062218, 0.0
+        beta, gamma = 0.062218, 0.05
 except Exception:
-    beta, gamma = 0.062218, 0.0
+    beta, gamma = 0.062218, 0.05
 
-# Initialize model and load weights
-hybrid_model = None
-try:
-    model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "saved_models", "hybrid.pt"))
-    if os.path.exists(model_path):
-        hybrid_model = HybridODE(beta, gamma)
-        hybrid_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-        hybrid_model.eval()
-except Exception as e:
-    print(f"[Simulation API] Error loading Hybrid model: {e}")
 
-class InterventionalODE(torch.nn.Module):
-    def __init__(self, beta, gamma, base_mobility, vaccination, lockdown_intensity, lockdown_day, neural_model):
-        super().__init__()
-        self.beta = beta
-        self.gamma = gamma
-        self.base_mobility = base_mobility
-        self.lockdown_intensity = lockdown_intensity
-        self.lockdown_day = lockdown_day
-        self.v = vaccination * 0.005
-        self.neural = neural_model
-        
-    def forward(self, t, state):
-        current_time = t.item() if hasattr(t, 'item') else float(t)
-        # Apply lockdown intensity if current time is past lockdown day
-        if current_time >= self.lockdown_day:
-            eff_mobility = self.base_mobility * (1.0 - self.lockdown_intensity)
-        else:
-            eff_mobility = self.base_mobility
-            
-        eff_beta = self.beta * eff_mobility
-        
-        if len(state.shape) == 1:
-            S, I, R = state[0], state[1], state[2]
-            dS = -eff_beta * S * I - self.v * S
-            dI = eff_beta * S * I - self.gamma * I
-            dR = self.gamma * I + self.v * S
-            sir = torch.stack([dS, dI, dR])
-        else:
-            S, I, R = state[:, 0], state[:, 1], state[:, 2]
-            dS = -eff_beta * S * I - self.v * S
-            dI = eff_beta * S * I - self.gamma * I
-            dR = self.gamma * I + self.v * S
-            sir = torch.stack([dS, dI, dR], dim=1)
-            
-        if self.neural is not None:
-            correction = self.neural(t, state) * 0.01
-        else:
-            correction = torch.zeros_like(sir)
-        return sir + correction
+def euler_sir(beta: float, gamma: float, v: float, mobility: float,
+              lockdown_intensity: float, lockdown_day: int,
+              days: int, x0: np.ndarray) -> np.ndarray:
+    """
+    Pure NumPy Euler integration of the SIR ODE system.
+    Returns array of shape (days, 3) with [S, I, R] columns.
+    """
+    dt = 1.0
+    states = np.zeros((days, 3))
+    states[0] = x0
+
+    for t in range(1, days):
+        S, I, R = states[t - 1]
+
+        # Apply lockdown reduction after lockdown_day
+        eff_mobility = mobility * (1.0 - lockdown_intensity) if t >= lockdown_day > 0 else mobility
+        eff_beta = beta * eff_mobility
+
+        dS = -eff_beta * S * I - v * S
+        dI = eff_beta * S * I - gamma * I
+        dR = gamma * I + v * S
+
+        states[t] = [
+            np.clip(S + dt * dS, 0.0, 1.0),
+            np.clip(I + dt * dI, 0.0, 1.0),
+            np.clip(R + dt * dR, 0.0, 1.0),
+        ]
+
+    return states
+
 
 @router.post("/")
 def simulate(data: SimulationInput):
     days = 160
-    t = torch.linspace(0.0, float(days - 1), days)
-    
-    # Standard initial conditions [S0, I0, R0]
-    x0 = torch.tensor([0.99, 0.01, 0.0], dtype=torch.float32)
-    
-    with torch.no_grad():
-        # Scenario 1: Baseline (using nominal mobility and vaccination rate, no lockdown)
-        baseline_ode = InterventionalODE(beta, gamma, data.mobility, data.vaccination, 0.0, 0, hybrid_model.neural if hybrid_model else None)
-        baseline_sol = odeint(baseline_ode, x0, t, method="euler")
-        
-        # Scenario 2: Intervention (using policy parameters, lockdown activated)
-        intervention_ode = InterventionalODE(beta, gamma, data.mobility, data.vaccination, data.lockdown_intensity, data.lockdown_day, hybrid_model.neural if hybrid_model else None)
-        intervention_sol = odeint(intervention_ode, x0, t, method="euler")
-        
-        # Scenario 3: Worst Case (uncontrolled spread - high mobility, no vaccination)
-        worst_ode = InterventionalODE(beta, gamma, 1.0, 0.0, 0.0, 0, hybrid_model.neural if hybrid_model else None)
-        worst_sol = odeint(worst_ode, x0, t, method="euler")
-        
+    x0 = np.array([0.99, 0.01, 0.0])
+    v = data.vaccination * 0.005
+
+    # Scenario 1: Baseline (no lockdown)
+    baseline = euler_sir(beta, gamma, v, data.mobility, 0.0, 0, days, x0)
+
+    # Scenario 2: With user-defined intervention
+    intervention = euler_sir(beta, gamma, v, data.mobility,
+                             data.lockdown_intensity, data.lockdown_day, days, x0)
+
+    # Scenario 3: Worst case (full mobility, no vaccination, no lockdown)
+    worst = euler_sir(beta, gamma, 0.0, 1.0, 0.0, 0, days, x0)
+
     trajectories = []
     for idx in range(days):
         trajectories.append({
             "day": idx + 1,
-            "baseline": float(baseline_sol[idx, 1].item()),
-            "intervention": float(intervention_sol[idx, 1].item()),
-            "worst_case": float(worst_sol[idx, 1].item())
+            "baseline": float(baseline[idx, 1]),
+            "intervention": float(intervention[idx, 1]),
+            "worst_case": float(worst[idx, 1]),
         })
-        
+
     return {
         "status": "simulation complete",
         "days": days,
-        "trajectories": trajectories
+        "trajectories": trajectories,
     }
-
