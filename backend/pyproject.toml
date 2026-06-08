@@ -1,0 +1,24 @@
+[project]
+name = "epidemic-sciml-backend"
+version = "0.1.0"
+description = "Backend API for SIR and Neural ODE Epidemic Modeling"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "torch>=2.0.0",
+    "torchdiffeq>=0.2.3",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.6",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchdiffeq = { index = "pytorch-cpu" }
