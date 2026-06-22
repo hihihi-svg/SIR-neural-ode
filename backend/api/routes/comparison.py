@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 import os
 import numpy as np
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+# Custom metrics implementation using numpy to avoid scikit-learn dependency at runtime
 
 router = APIRouter(
     prefix="/compare",
@@ -38,9 +38,16 @@ def compare():
         hybrid = hybrid[:length]
         
         def calculate_metrics(true, pred):
-            rmse = np.sqrt(mean_squared_error(true, pred))
-            mae = mean_absolute_error(true, pred)
-            r2 = r2_score(true, pred)
+            # Calculate metrics using numpy to avoid sklearn dependency
+            mse = np.mean((true - pred) ** 2)
+            rmse = np.sqrt(mse)
+            mae = np.mean(np.abs(true - pred))
+            
+            # R2 score calculation
+            ss_res = np.sum((true - pred) ** 2)
+            ss_tot = np.sum((true - np.mean(true)) ** 2)
+            r2 = 1.0 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
+            
             return {
                 "RMSE": float(rmse),
                 "MAE": float(mae),

@@ -1,3 +1,14 @@
+import sys
+import os
+
+# Add backend and backend/api to sys.path to allow imports from local modules on Vercel
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+api_dir = os.path.join(current_dir, "api")
+if api_dir not in sys.path:
+    sys.path.append(api_dir)
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +29,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import os
+from fastapi.staticfiles import StaticFiles
+
+results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
+app.mount("/results", StaticFiles(directory=results_dir), name="results")
+
 # Include API routes
 app.include_router(api_router, prefix="/api")
 
@@ -30,4 +47,4 @@ def read_root():
     }
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8001, reload=True)

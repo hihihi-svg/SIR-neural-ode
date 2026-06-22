@@ -27,7 +27,11 @@ function Explainability() {
     // Helper to get image URL
     const getImgUrl = (path: string) => {
         if (!path) return "";
-        return `http://localhost:8001${path}`;
+        const isLocalhost = typeof window !== "undefined" && 
+          (window.location.hostname === "localhost" || 
+           window.location.hostname === "127.0.0.1" || 
+           window.location.hostname.includes("192.168."));
+        return isLocalhost ? `http://localhost:8001${path}` : `/_/backend${path}`;
     };
 
     return (
